@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupWebSocket } from "./websocket";
@@ -16,8 +17,8 @@ declare module "http" {
 
 // Enable CORS
 app.use(cors({
-    origin: true, // Allow all origins for now (or set to specific client URL)
-    credentials: true, // Allow cookies
+  origin: true, // Allow all origins for now (or set to specific client URL)
+  credentials: true, // Allow cookies
 }));
 
 app.use(
@@ -70,7 +71,7 @@ app.use((req, res, next) => {
 (async () => {
   // Register REST Routes
   await registerRoutes(httpServer, app);
-  
+
   // Setup WebSocket Server
   setupWebSocket(httpServer);
 

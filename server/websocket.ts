@@ -40,7 +40,7 @@ export function setupWebSocket(server: Server) {
   wss.on("connection", async (ws: ExtendedWebSocket, req: any) => {
     const userId = req.session.passport.user;
     const identityId = userId;
-    
+
     ws.identityId = identityId;
     ws.isAlive = true;
 
@@ -56,42 +56,68 @@ export function setupWebSocket(server: Server) {
     ws.on("message", async (data) => {
       try {
         const message = JSON.parse(data.toString());
-        
-        // Example: Typing indicators
-        if (message.type === "typing") {
-            // Need to fetch participants to broadcast correctly
+
+        switch (message.type) {
+          case "typing": {
+            // Determine recipients (everyone else in conversation)
+            // This is expensive if we query DB every keystroke. 
+            // Optimization: Client sends list of recipients? Or we cache?
+            // For now, let's trust client to send conversationId, but we need to know who is in it.
+            // Reverting to broadcast to all participants fetched from DB is safest but slow.
+            // Alternative: Client sends 'recipientIds' if known? No, security risk.
+
+            // Let's implement robust participant fetch
             const participants = await storage.getParticipants(message.conversationId);
             const recipientIds = participants
-                .map(p => p.identityId)
-                .filter(id => id !== identityId); // Don't send back to self
+              .map(p => p.identityId)
+              .filter(id => id !== identityId);
 
             notifyList(recipientIds, {
-                type: "typing",
-                conversationId: message.conversationId,
-                identityId: ws.identityId,
-                isTyping: message.isTyping
+              type: "typing",
+              conversationId: message.conversationId,
+              identityId: identityId,
+              isTyping: message.isTyping
             });
-        }
-        
-        // WebRTC Signaling
-        if (message.type === "call_signal") {
-            const { targetIdentityId, signal } = message;
-            // Forward signal directly to target
+            break;
+          }
+
+          case "call_request": {
+            const { targetIdentityId, callType } = message;
             notifyList([targetIdentityId], {
-                type: "call_signal",
-                senderIdentityId: ws.identityId,
-                signal
+              type: "call_incoming",
+              callerIdentityId: identityId,
+              callType
             });
-        }
-        
-        // Call Request (Initiate)
-        if (message.type === "call_request") {
-             const { targetIdentityId, callType } = message;
-             notifyList([targetIdentityId], {
-                 type: "call_incoming",
-                 callerIdentityId: ws.identityId,
-                 callType
-             });
+            break;
+          }
+
+          case "call_accepted": {
+            const { targetIdentityId } = message;
+            notifyList([targetIdentityId], {
+              type: "call_accepted",
+              accepterIdentityId: identityId
+            });
+            break;
+          }
+
+          case "call_ended": {
+            const { targetIdentityId } = message;
+            notifyList([targetIdentityId], {
+              type: "call_ended",
+              enderIdentityId: identityId
+            });
+            break;
+          }
+
+          case "call_signal": {
+            const { targetIdentityId, signal } = message;
+            notifyList([targetIdentityId], {
+              type: "call_signal",
+              senderIdentityId: identityId,
+              signal
+            });
+            break;
+          }
         }
 
       } catch (err) {
@@ -122,14 +148,14 @@ export function setupWebSocket(server: Server) {
 }
 
 export function notifyList(identityIds: number[], payload: any) {
-    if (!wssInstance) return;
-    
-    const payloadStr = JSON.stringify(payload);
-    
-    wssInstance.clients.forEach((client: any) => {
-        if (client.readyState === WebSocket.OPEN && client.identityId && identityIds.includes(client.identityId)) {
-            client.send(payloadStr);
-        }
-    });
+  if (!wssInstance) return;
+
+  const payloadStr = JSON.stringify(payload);
+
+  wssInstance.clients.forEach((client: any) => {
+    if (client.readyState === WebSocket.OPEN && client.identityId && identityIds.includes(client.identityId)) {
+      client.send(payloadStr);
+    }
+  });
 }
 

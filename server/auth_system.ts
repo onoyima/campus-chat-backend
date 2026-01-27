@@ -1,3 +1,4 @@
+import "dotenv/config";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
@@ -8,8 +9,8 @@ import { eq, or } from "drizzle-orm";
 import { students, staff, chatIdentities } from "@shared/schema";
 import bcrypt from "bcryptjs";
 
-// Define MySQLStore constructor properly
-const MySQLSessionStore = MySQLStore(session);
+// Define MySQLStore constructor
+const MySQLSessionStore = MySQLStore as any;
 
 const sessionTtl = 30 * 24 * 60 * 60 * 1000; // 30 Days (Requirement)
 
@@ -22,7 +23,7 @@ const options = {
   expiration: sessionTtl,
   createDatabaseTable: true, // Auto-create session table
   schema: {
-      tableName: 'comm_sessions' // Use this table name to avoid conflict with existing 'sessions' table
+    tableName: 'comm_sessions' // Use this table name to avoid conflict with existing 'sessions' table
   }
 };
 
@@ -35,7 +36,7 @@ export const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false, 
+    secure: false,
     maxAge: sessionTtl,
   },
 });
@@ -58,108 +59,111 @@ export function setupAuthSystem(app: Express) {
         let displayName = "";
         let userId = "";
         let userEmail = ""; // To capture email if logged in via matricNo
+        console.log(`[auth] Debug: starting login for identifier: ${identifier}`);
 
         // Helper to check password
         const checkPassword = async (storedPassword: string | null) => {
-             if (!storedPassword) return false;
-             // 1. Try Bcrypt compare
-             const isMatch = await bcrypt.compare(password, storedPassword);
-             if (isMatch) return true;
-             // 2. Fallback: Plain text compare (for legacy or unhashed data)
-             return storedPassword === password;
+          if (!storedPassword) return false;
+          // 1. Try Bcrypt compare
+          const isMatch = await bcrypt.compare(password, storedPassword);
+          if (isMatch) return true;
+          // 2. Fallback: Plain text compare (for legacy or unhashed data)
+          return storedPassword === password;
         };
 
         // 1. Check Student Table (by Email OR Matric No/Username)
         // Note: students.matricNo maps to 'username' column in DB
         const studentsList = await db.select().from(students).where(
-             or(
-                 eq(students.email, identifier),
-                 eq(students.matricNo, identifier)
-             )
+          or(
+            eq(students.email, identifier),
+            eq(students.matricNo, identifier)
+          )
         );
         const student = studentsList[0];
+        console.log(`[auth] Debug: student search result: ${student ? 'Found' : 'Not Found'}`);
+        if (student) console.log(`[auth] Debug: student details: email=${student.email}, matricNo=${student.matricNo}`);
 
         if (student) {
-            if (await checkPassword(student.password)) {
-                user = student;
-                role = "STUDENT";
-                entityId = student.id;
-                displayName = `${student.fname} ${student.lname}`;
-                userId = String(student.userId || student.id);
-                userEmail = student.email || "";
-            } else {
-                console.log(`[auth] student password mismatch :: identifier=${identifier}`);
-                return done(null, false, { message: "Incorrect password for student account" });
-            }
+          if (await checkPassword(student.password)) {
+            user = student;
+            role = "STUDENT";
+            entityId = student.id;
+            displayName = `${student.fname} ${student.lname}`;
+            userId = String(student.userId || student.id);
+            userEmail = student.email || "";
+          } else {
+            console.log(`[auth] student password mismatch :: identifier=${identifier}. DB Hash starts with: ${student.password ? student.password.substring(0, 10) : 'null'}`);
+            return done(null, false, { message: "Incorrect password for student account" });
+          }
         }
 
         // 2. If not student, Check Staff Table (Only by Email for now, or maybe staff ID?)
         if (!user) {
-            const [staffMember] = await db.select().from(staff).where(eq(staff.email, identifier));
-            if (staffMember) {
-                 if (await checkPassword(staffMember.password)) {
-                    user = staffMember;
-                    role = "STAFF";
-                    entityId = staffMember.id;
-                    displayName = `${staffMember.fname} ${staffMember.lname}`;
-                    userId = String(staffMember.id);
-                    userEmail = staffMember.email || "";
-                 } else {
-                    console.log(`[auth] staff password mismatch :: identifier=${identifier}`);
-                    return done(null, false, { message: "Incorrect password for staff account" });
-                 }
-             }
+          const [staffMember] = await db.select().from(staff).where(eq(staff.email, identifier));
+          if (staffMember) {
+            if (await checkPassword(staffMember.password)) {
+              user = staffMember;
+              role = "STAFF";
+              entityId = staffMember.id;
+              displayName = `${staffMember.fname} ${staffMember.lname}`;
+              userId = String(staffMember.id);
+              userEmail = staffMember.email || "";
+            } else {
+              console.log(`[auth] staff password mismatch :: identifier=${identifier}`);
+              return done(null, false, { message: "Incorrect password for staff account" });
+            }
+          }
         }
 
         if (!user) {
-           // We checked both tables and found no user
-           console.log(`[auth] account not found :: identifier=${identifier}`);
-           return done(null, false, { message: "Account not found. Check your Email or Matric No." });
+          // We checked both tables and found no user
+          console.log(`[auth] account not found :: identifier=${identifier}`);
+          return done(null, false, { message: "Account not found. Check your Email or Matric No." });
         }
 
         // 3. User valid - Ensure they have a Chat Identity
         // We use the User's Email to link identity.
         if (!userEmail) {
-             console.log(`[auth] user has no email linked :: identifier=${identifier}`);
-             return done(null, false, { message: "User account has no email address linked." });
+          console.log(`[auth] user has no email linked :: identifier=${identifier}`);
+          return done(null, false, { message: "User account has no email address linked." });
         }
 
         let [identity] = await db.select().from(chatIdentities).where(eq(chatIdentities.email, userEmail));
-        
+
         // Super Admin Emails (Hardcoded Enforcement)
         const superAdmins = [
-            'onoyimab@veritas.edu.ng',
-            'egbee@veritas.edu.ng',
-            'christopherl@veritas.edu.ng'
+          'onoyimab@veritas.edu.ng',
+          'egbee@veritas.edu.ng',
+          'christopherl@veritas.edu.ng'
         ];
-        
+
         let finalRole = role;
         if (superAdmins.includes(userEmail.toLowerCase())) {
-            finalRole = 'SUPER_ADMIN';
+          finalRole = 'SUPER_ADMIN';
         }
 
         if (!identity) {
-            // Insert new identity
-            const [result] = await db.insert(chatIdentities).values({
-                userId: userId,
-                email: userEmail,
-                entityType: role.toLowerCase(),
-                entityId: entityId,
-                displayName: displayName,
-                role: finalRole,
-                isOnline: true
-            });
-            
-            // Fetch newly created identity
-            [identity] = await db.select().from(chatIdentities).where(eq(chatIdentities.id, result.insertId));
+          // Insert new identity
+          const [result] = await db.insert(chatIdentities).values({
+            userId: userId,
+            email: userEmail,
+            entityType: role.toLowerCase(),
+            entityId: entityId,
+            displayName: displayName,
+            role: finalRole,
+            isOnline: true
+          });
+
+          // Fetch newly created identity
+          [identity] = await db.select().from(chatIdentities).where(eq(chatIdentities.id, result.insertId));
         } else {
-            // Update role if promoted to Super Admin
-            if (identity.role !== 'SUPER_ADMIN' && finalRole === 'SUPER_ADMIN') {
-                 await db.update(chatIdentities)
-                    .set({ role: 'SUPER_ADMIN' })
-                    .where(eq(chatIdentities.id, identity.id));
-                 identity.role = 'SUPER_ADMIN';
-            }
+          // Update role if promoted to Super Admin
+          if (identity.role !== 'SUPER_ADMIN' && finalRole === 'SUPER_ADMIN') {
+            await db.update(chatIdentities)
+              .set({ role: 'SUPER_ADMIN' })
+              .where(eq(chatIdentities.id, identity.id));
+            identity.role = 'SUPER_ADMIN';
+          }
         }
 
         console.log(`[auth] login success :: identityId=${identity.id} email=${identity.email} role=${identity.role}`);
@@ -186,7 +190,7 @@ export function setupAuthSystem(app: Express) {
 
   // Auth Routes
   app.post("/api/login", (req, res, next) => {
-    passport.authenticate("local", (err, user, info) => {
+    passport.authenticate("local", (err: any, user: any, info: any) => {
       if (err) return next(err);
       if (!user) {
         const message = (info && (info as any).message) || "Invalid credentials";
