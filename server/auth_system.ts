@@ -200,12 +200,6 @@ export function setupAuthSystem(app: Express) {
       req.logIn(user, (err) => {
         if (err) return next(err);
 
-        // Explicitly set cookie header for cross-origin in production
-        if (process.env.NODE_ENV === 'production') {
-          const sessionCookie = req.sessionID;
-          res.setHeader('Set-Cookie', `connect.sid=${sessionCookie}; Path=/; HttpOnly; Secure; SameSite=None`);
-        }
-
         res.json({
           message: "Logged in successfully",
           user: req.user,
