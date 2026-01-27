@@ -36,7 +36,8 @@ export const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: false,
+    secure: process.env.NODE_ENV === 'production', // true in production for HTTPS
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-site in production
     maxAge: sessionTtl,
   },
 });
