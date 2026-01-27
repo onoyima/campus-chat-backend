@@ -10,7 +10,7 @@ import { students, staff, chatIdentities } from "@shared/schema";
 import bcrypt from "bcryptjs";
 
 // Define MySQLStore constructor
-const MySQLSessionStore = MySQLStore as any;
+const MySQLSessionStore = (MySQLStore as any)(session);
 
 const sessionTtl = 30 * 24 * 60 * 60 * 1000; // 30 Days (Requirement)
 
