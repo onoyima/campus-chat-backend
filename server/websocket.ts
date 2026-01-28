@@ -16,9 +16,33 @@ export function setupWebSocket(server: Server) {
   const wss = new WebSocketServer({ noServer: true });
   wssInstance = wss;
 
-  server.on("upgrade", (request, socket, head) => {
+  server.on("upgrade", async (request, socket, head) => {
     if (request.url !== "/ws") return;
 
+    // Check for JWT Token in Header or Protocol
+    // Note: Browser WebSocket API doesn't allow custom headers easily, but some clients do.
+    // We can also check Sec-WebSocket-Protocol.
+    let identityId: number | null = null;
+
+    // 1. Try Authorization Header
+    const authHeader = request.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      const { verifyToken } = await import('./jwt');
+      const payload = verifyToken(token);
+      if (payload) identityId = payload.identityId;
+    }
+
+    if (identityId) {
+      // Authenticated via JWT
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        (ws as any).identityId = identityId; // Attach identityId manually since no session
+        wss.emit("connection", ws, request);
+      });
+      return;
+    }
+
+    // 2. Fallback to Session Cookie
     // @ts-ignore
     sessionMiddleware(request as Request, {} as any, () => {
       // @ts-ignore
@@ -38,8 +62,13 @@ export function setupWebSocket(server: Server) {
   });
 
   wss.on("connection", async (ws: ExtendedWebSocket, req: any) => {
-    const userId = req.session.passport.user;
-    const identityId = userId;
+    // Prefer manually attached identityId (from JWT) or fallback to session
+    const identityId = ws.identityId || (req.session && req.session.passport ? req.session.passport.user : null);
+
+    if (!identityId) {
+      ws.close();
+      return;
+    }
 
     ws.identityId = identityId;
     ws.isAlive = true;
