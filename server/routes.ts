@@ -3,13 +3,17 @@ import type { Server } from "http";
 import { setupAuthSystem } from "./auth_system";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
-import { insertAnnouncementSchema } from "@shared/schema";
+import { insertAnnouncementSchema, students, staff, chatIdentities } from "@shared/schema";
 import { z } from "zod";
 import { notifyList } from "./websocket";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import express from "express";
+import { generateToken, verifyToken } from "./jwt";
+import bcrypt from "bcryptjs";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
 
 export async function registerRoutes(
     httpServer: Server,
@@ -48,11 +52,77 @@ export async function registerRoutes(
     `);
     });
 
-    const getContextIdentity = async (req: any) => {
-        if (!req.isAuthenticated()) return null;
+    // JWT-based Login Endpoint (for cross-origin deployments)
+    app.post("/api/auth/token", async (req, res) => {
+        try {
+            const { email, password } = req.body;
 
-        // In our local strategy, req.user IS the identity (or at least contains the ID)
-        // The deserializer in auth_system.ts returns the full identity object
+            if (!email || !password) {
+                return res.status(400).json({ message: "Email and password are required" });
+            }
+
+            // Check Student Table
+            const [student] = await db.select().from(students).where(eq(students.email, email));
+
+            let identity = null;
+            let userPassword = null;
+
+            if (student) {
+                userPassword = student.password;
+                const [existingIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.email, email));
+                identity = existingIdentity;
+            } else {
+                // Check Staff Table
+                const [staffMember] = await db.select().from(staff).where(eq(staff.email, email));
+
+                if (staffMember) {
+                    userPassword = staffMember.password;
+                    const [existingIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.email, email));
+                    identity = existingIdentity;
+                }
+            }
+
+            if (!userPassword || !identity) {
+                return res.status(401).json({ message: "Invalid credentials" });
+            }
+
+            // Verify password
+            const isMatch = await bcrypt.compare(password, userPassword);
+            if (!isMatch) {
+                return res.status(401).json({ message: "Invalid credentials" });
+            }
+
+            // Generate JWT token
+            const token = generateToken({
+                identityId: identity.id,
+                email: identity.email,
+                role: identity.role
+            });
+
+            res.json({
+                message: "Logged in successfully",
+                token,
+                user: identity
+            });
+        } catch (error) {
+            console.error('[JWT Login Error]', error);
+            res.status(500).json({ message: "Internal server error" });
+        }
+    });
+
+    const getContextIdentity = async (req: any) => {
+        // Try JWT first
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+            const payload = verifyToken(token);
+            if (payload) {
+                return await storage.getIdentity(payload.identityId);
+            }
+        }
+
+        // Fallback to session-based auth
+        if (!req.isAuthenticated()) return null;
         return req.user;
     };
 
