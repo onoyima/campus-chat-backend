@@ -220,7 +220,25 @@ export function setupAuthSystem(app: Express) {
     });
   });
 
-  app.get("/api/auth/user", (req, res) => {
+  app.get("/api/auth/user", async (req, res) => {
+    // Try JWT first
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      const { verifyToken } = await import('./jwt');
+      const payload = verifyToken(token);
+
+      if (payload) {
+        // Get full identity from database
+        const { storage } = await import('./storage');
+        const identity = await storage.getIdentity(payload.identityId);
+        if (identity) {
+          return res.json(identity);
+        }
+      }
+    }
+
+    // Fallback to session-based auth
     if (req.isAuthenticated()) {
       res.json(req.user);
     } else {
