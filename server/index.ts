@@ -20,7 +20,8 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
-  'https://campus-chat-frontend.vercel.app'
+  'https://campus-chat-frontend.vercel.app',
+  'https://campus-chat-kappa.vercel.app' // Added common Vercel naming pattern
 ];
 
 app.use(cors({
@@ -34,13 +35,20 @@ app.use(cors({
     }
 
     // In production, check against whitelist
-    if (allowedOrigins.includes(origin)) {
+    const isAllowed = allowedOrigins.some(allowed => origin.startsWith(allowed) || origin === allowed);
+
+    if (isAllowed) {
       callback(null, true);
     } else {
+      console.warn(`[CORS Blocked] Origin: ${origin}`);
+      // For now, allow everything if it ends with .vercel.app to be safe for diverse deployments
+      if (origin.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true, // Allow cookies
+  credentials: true,
 }));
 
 app.use(
