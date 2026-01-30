@@ -9,8 +9,10 @@ const dbConfig = {
   database: process.env.DB_DATABASE || "exeat1",
   port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: 50,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000 // 10 seconds
 };
 
 export const poolConnection = mysql.createPool(dbConfig);

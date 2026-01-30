@@ -3,7 +3,7 @@ import type { Server } from "http";
 import { setupAuthSystem } from "./auth_system";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
-import { insertAnnouncementSchema, students, staff, chatIdentities } from "@shared/schema";
+import { insertAnnouncementSchema, students, staff, chatIdentities, studentAcademics } from "@shared/schema";
 import { z } from "zod";
 import { notifyList } from "./websocket";
 import multer from "multer";
@@ -12,6 +12,7 @@ import fs from "fs";
 import express from "express";
 import { generateToken, verifyToken } from "./jwt";
 import bcrypt from "bcryptjs";
+import sharp from "sharp";
 import { db } from "./db";
 import { eq } from "drizzle-orm";
 
@@ -70,7 +71,23 @@ export async function registerRoutes(
             if (student) {
                 userPassword = student.password;
                 const [existingIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.email, email));
-                identity = existingIdentity;
+                if (existingIdentity) {
+                    identity = existingIdentity;
+                } else {
+                    // Auto-provision identity for student
+                    const [insertResult] = await db.insert(chatIdentities).values({
+                        userId: student.id.toString(),
+                        email: student.email,
+                        entityType: 'student',
+                        entityId: student.id,
+                        displayName: `${student.fname} ${student.lname}`.trim(),
+                        role: 'STUDENT',
+                        isOnline: false,
+                        isSuspended: false
+                    });
+                    const [newIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.id, insertResult.insertId));
+                    identity = newIdentity;
+                }
             } else {
                 // Check Staff Table
                 const [staffMember] = await db.select().from(staff).where(eq(staff.email, email));
@@ -78,7 +95,23 @@ export async function registerRoutes(
                 if (staffMember) {
                     userPassword = staffMember.password;
                     const [existingIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.email, email));
-                    identity = existingIdentity;
+                    if (existingIdentity) {
+                        identity = existingIdentity;
+                    } else {
+                        // Auto-provision identity for staff
+                        const [insertResult] = await db.insert(chatIdentities).values({
+                            userId: staffMember.id.toString(),
+                            email: staffMember.email,
+                            entityType: 'staff',
+                            entityId: staffMember.id,
+                            displayName: `${staffMember.fname} ${staffMember.lname}`.trim(),
+                            role: staffMember.role || 'STAFF',
+                            isOnline: false,
+                            isSuspended: false
+                        });
+                        const [newIdentity] = await db.select().from(chatIdentities).where(eq(chatIdentities.id, insertResult.insertId));
+                        identity = newIdentity;
+                    }
                 }
             }
 
@@ -98,6 +131,22 @@ export async function registerRoutes(
                 email: identity.email,
                 role: identity.role
             });
+
+            // Auto Group Sync for Students
+            if (identity.entityType === 'student') {
+                import("./services/AutoGroupService").then(({ AutoGroupService }) => {
+                    console.log(`Triggering group sync for student ${identity.entityId}`);
+                    AutoGroupService.syncStudent(identity.entityId).catch(err => console.error("Auto sync failed:", err));
+                });
+            }
+
+            // Auto Group Sync for Staff
+            if (identity.entityType === 'staff') {
+                import("./services/AutoGroupService").then(({ AutoGroupService }) => {
+                    console.log(`Triggering group sync for staff ${identity.entityId}`);
+                    AutoGroupService.syncStaff(identity.entityId).catch(err => console.error("Auto sync failed:", err));
+                });
+            }
 
             res.json({
                 message: "Logged in successfully",
@@ -432,6 +481,16 @@ export async function registerRoutes(
             await storage.addParticipant(conversation.id, target.id, 'member');
         }
         res.status(201).json(conversation);
+    });
+
+
+    app.post("/api/conversations/:id/read", async (req, res) => {
+        const me = await getMe(req);
+        if (!me) return res.status(401).json({ message: "Unauthorized" });
+        const convId = Number(req.params.id);
+
+        await storage.markConversationAsRead(convId, me.id);
+        res.json({ success: true });
     });
 
     // 3. Messages
@@ -900,6 +959,66 @@ export async function registerRoutes(
         res.json({ success: true });
     });
 
+    // --- Auto Group Management ---
+
+    app.post("/api/admin/sync-groups", async (req, res) => {
+        // ideally add admin auth check here
+        console.log("Starting full group sync...");
+        const { AutoGroupService } = await import("./services/AutoGroupService");
+
+        try {
+            const allStudents = await db.select().from(students);
+            let sCount = 0;
+            for (const s of allStudents) {
+                await AutoGroupService.syncStudent(s.id);
+                sCount++;
+            }
+
+            const allStaff = await db.select().from(staff);
+            let tCount = 0;
+            for (const t of allStaff) {
+                await AutoGroupService.syncStaff(t.id);
+                tCount++;
+            }
+            res.json({ message: `Synced groups for ${sCount} students and ${tCount} staff` });
+        } catch (err) {
+            console.error("Group sync failed", err);
+            res.status(500).json({ error: "Sync failed" });
+        }
+    });
+
+    app.post("/api/debug/seed-academics", async (req, res) => {
+        // Helper to populate the new table for testing
+        const { studentAcademics } = await import("@shared/schema");
+        try {
+            const allStudents = await db.select().from(students);
+            let created = 0;
+
+            for (const s of allStudents) {
+                // Check if exists
+                const existing = await db.select().from(studentAcademics).where(eq(studentAcademics.studentId, s.id));
+                if (existing.length === 0) {
+                    // Create dummy data
+                    // Derive from matric if possible? VUG/CSC/16... -> Year 16
+                    // Let's just assign random level 100-400
+                    const levels = ["100", "200", "300", "400"];
+                    const randomLevel = levels[Math.floor(Math.random() * levels.length)];
+
+                    await db.insert(studentAcademics).values({
+                        studentId: s.id,
+                        level: randomLevel,
+                        matricNo: s.matricNo, // Ensure this maps correctly
+                    });
+                    created++;
+                }
+            }
+            res.json({ message: `Seeded academic records for ${created} students` });
+        } catch (err) {
+            console.error("Seeding failed", err);
+            res.status(500).json({ error: "Seeding failed" });
+        }
+    });
+
     // --- Announcements ---
 
     app.get("/api/announcements", async (req, res) => {
@@ -958,10 +1077,32 @@ export async function registerRoutes(
 
     const upload = multer({ storage: storageMulter });
 
-    app.post('/api/upload', upload.single('file'), (req, res) => {
+    app.post('/api/upload', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
-        // Return relative URL (we need to serve this static folder)
+        // Optimization for images
+        if (req.file.mimetype.startsWith('image/')) {
+            try {
+                const optimizedName = 'opt-' + path.parse(req.file.filename).name + '.webp';
+                const optimizedPath = path.join(uploadDir, optimizedName);
+
+                await sharp(req.file.path)
+                    .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+                    .toFormat('webp', { quality: 80 })
+                    .toFile(optimizedPath);
+
+                // Delete original and use optimized webp
+                fs.unlinkSync(req.file.path);
+
+                // Update return URL
+                const url = `/uploads/${optimizedName}`;
+                return res.json({ url });
+            } catch (err) {
+                console.error("Image optimization failed, using original:", err);
+            }
+        }
+
+        // Return relative URL (fallback or non-image)
         const url = `/uploads/${req.file.filename}`;
         res.json({ url });
     });
