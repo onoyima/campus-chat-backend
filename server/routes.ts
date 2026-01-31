@@ -77,7 +77,7 @@ export async function registerRoutes(
                     // Auto-provision identity for student
                     const [insertResult] = await db.insert(chatIdentities).values({
                         userId: student.id.toString(),
-                        email: student.email,
+                        email: student.email || "",
                         entityType: 'student',
                         entityId: student.id,
                         displayName: `${student.fname} ${student.lname}`.trim(),
@@ -101,7 +101,7 @@ export async function registerRoutes(
                         // Auto-provision identity for staff
                         const [insertResult] = await db.insert(chatIdentities).values({
                             userId: staffMember.id.toString(),
-                            email: staffMember.email,
+                            email: staffMember.email || "",
                             entityType: 'staff',
                             entityId: staffMember.id,
                             displayName: `${staffMember.fname} ${staffMember.lname}`.trim(),

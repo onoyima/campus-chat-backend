@@ -99,7 +99,7 @@ export class DatabaseStorage implements IStorage {
 
         // 2. Fetch source details
         let displayName = "Unknown User";
-        let email = "";
+        let email: string = "";
         let userId = String(entityId); // Fallback
         let role = "MEMBER";
 
